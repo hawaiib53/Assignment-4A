@@ -1,0 +1,60 @@
+const { chromium } = require("playwright");
+const path = require("path");
+
+(async () => {
+  const browser = await chromium.launch({ executablePath: "/opt/pw-browsers/chromium" });
+  const page = await browser.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push("pageerror: " + e.message));
+  page.on("console", (msg) => { if (msg.type() === "error") errors.push("console.error: " + msg.text()); });
+
+  await page.goto("file://" + path.resolve(__dirname, "negotiation_brief_generator.html"));
+
+  await page.fill("#companyName", "Glow Body Co.");
+  await page.fill("#distributorName", "Sephora");
+  await page.fill("#notesText", "They want a higher minimum order and more marketing spend, and flagged our chargeback rate.");
+
+  // upload the real sample scenario docx
+  const filePath = path.resolve(__dirname, "../samples/sample_scenario_input.docx");
+  await page.setInputFiles("#scenarioFile", filePath);
+  await page.waitForFunction(() => document.getElementById("fileStatus").textContent.includes("✓"));
+  const fileStatusText = await page.textContent("#fileStatus");
+  console.log("FILE STATUS:", fileStatusText);
+
+  const chipsText = await page.textContent("#detectChips");
+  console.log("CHIPS BEFORE GENERATE:", chipsText);
+
+  await page.click("#generateBtn");
+  await page.waitForSelector("#briefSheet");
+
+  const situationText = await page.textContent(".brief-sheet");
+  console.log("BRIEF CONTAINS 'Sephora':", situationText.includes("Sephora"));
+  console.log("BRIEF CONTAINS 'chargeback' (case-insensitive):", /chargeback/i.test(situationText));
+  console.log("BRIEF CONTAINS sample docx text:", situationText.includes("28 SKUs"));
+
+  // sign-off gating
+  const downloadDisabledBefore = await page.getAttribute("#downloadBtn", "disabled");
+  console.log("Download disabled before signoff:", downloadDisabledBefore !== null);
+
+  await page.check("#signCheck");
+  await page.fill("#signName", "Ashley Umlauf");
+
+  const downloadDisabledAfter = await page.getAttribute("#downloadBtn", "disabled");
+  console.log("Download disabled after signoff:", downloadDisabledAfter !== null);
+
+  // fill an objective field and BATNA to confirm they're read at export
+  await page.fill('input[data-obj="0"][data-field="target"]', "48% margin");
+  await page.fill("#batnaInput", "Move volume to a regional distributor within 60 days");
+
+  const [ download ] = await Promise.all([
+    page.waitForEvent("download"),
+    page.click("#downloadBtn"),
+  ]);
+  const downloadPath = "/tmp/playwright_download.docx";
+  await download.saveAs(downloadPath);
+  console.log("Downloaded to:", downloadPath);
+
+  console.log("JS ERRORS:", errors.length ? errors : "none");
+
+  await browser.close();
+})();

@@ -1,0 +1,47 @@
+// Second sample scenario: a distributor NOT in the static knowledge base
+// (QH Distribution), to demonstrate the live-web-research path rather than
+// the pre-built Sephora/Ulta profiles.
+const fs = require("fs");
+const path = require("path");
+const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require("docx");
+
+const doc = new Document({
+  sections: [
+    {
+      children: [
+        new Paragraph({ text: "Renewal Notes — QH Distribution Agreement", heading: HeadingLevel.HEADING_1 }),
+        new Paragraph({
+          children: [new TextRun(
+            "QH Distribution has carried our body butter and body oil lines into spas and independent " +
+            "retailers for just over a year. Our distribution agreement renews in 45 days."
+          )],
+        }),
+        new Paragraph({
+          children: [new TextRun(
+            "Their rep raised two things for renewal: (1) increasing our per-brand minimum order requirement, " +
+            "and (2) keeping the standard 30% deposit / 70% before delivery payment terms even though our " +
+            "order sizes have grown a lot since we started."
+          )],
+        }),
+        new Paragraph({
+          children: [new TextRun(
+            "On our side: we've grown from 2 retailers to 11 through them in the last year, reorders have " +
+            "been consistent, and we have not had a single late shipment or compliance issue. The 30/70 " +
+            "payment split is a real cash flow strain now that order sizes are 3x what they were at launch."
+          )],
+        }),
+        new Paragraph({
+          children: [new TextRun(
+            "We'd like to negotiate a volume-based MOQ break and better payment terms (or staged terms) given " +
+            "our track record, without giving up the relationship."
+          )],
+        }),
+      ],
+    },
+  ],
+});
+
+Packer.toBuffer(doc).then((buffer) => {
+  fs.writeFileSync(path.join(__dirname, "sample_scenario_input_2.docx"), buffer);
+  console.log("Wrote sample_scenario_input_2.docx");
+});

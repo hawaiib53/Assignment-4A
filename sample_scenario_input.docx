@@ -1,0 +1,52 @@
+// Builds a sample scenario .docx to demonstrate the "Word document" input
+// path for the negotiation brief generator. This simulates a small body
+// care company owner's notes about an upcoming distributor renewal.
+const fs = require("fs");
+const path = require("path");
+const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require("docx");
+
+const doc = new Document({
+  sections: [
+    {
+      children: [
+        new Paragraph({ text: "Renewal Notes — Sephora Distribution Agreement", heading: HeadingLevel.HEADING_1 }),
+        new Paragraph({
+          children: [new TextRun(
+            "We've been in Sephora for just under three years now (28 SKUs across our body butter and body " +
+            "oil lines). Contract is up for renewal in 60 days. Our Sephora buyer mentioned in our last call " +
+            "that they want to revisit terms."
+          )],
+        }),
+        new Paragraph({
+          children: [new TextRun(
+            "Specifically she raised three things: (1) increasing our minimum order commitment for next " +
+            "year by about 40%, (2) asking us to commit more marketing/trade spend to fund an endcap " +
+            "placement, and (3) a note that our chargeback rate on late shipments has been higher than they'd " +
+            "like the last two quarters."
+          )],
+        }),
+        new Paragraph({
+          children: [new TextRun(
+            "On our side: sell-through has actually been solid, our body oil line is one of the better " +
+            "performers in our sub-category per the quarterly reports they share, and we've had strong " +
+            "reviews (4.7 avg, 1,200+ reviews). Margin is already tight after trade spend, so we're worried " +
+            "about the combination of higher MOQ plus more marketing spend hitting cash flow hard, especially " +
+            "with 60-day payment terms."
+          )],
+        }),
+        new Paragraph({
+          children: [new TextRun(
+            "We have had informal interest from a regional distributor about carrying us in spas and " +
+            "boutique retailers, but nothing signed. We'd prefer to stay in Sephora if we can get to " +
+            "reasonable terms."
+          )],
+        }),
+      ],
+    },
+  ],
+});
+
+Packer.toBuffer(doc).then((buffer) => {
+  fs.writeFileSync(path.join(__dirname, "sample_scenario_input.docx"), buffer);
+  console.log("Wrote sample_scenario_input.docx");
+});

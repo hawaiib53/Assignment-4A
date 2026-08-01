@@ -1,0 +1,450 @@
+#!/usr/bin/env node
+/**
+ * Negotiation Brief Generator
+ *
+ * Reads a description of a distributor/scenario from a Word document (.docx)
+ * and/or free-text input, matches it against a small researched knowledge
+ * base of distributor profiles, contract-issue context, and negotiation
+ * tactics, and produces a draft negotiation brief as a .docx.
+ *
+ * The output is always marked DRAFT - PENDING OWNER REVIEW. This tool does
+ * not send, file, or finalize anything; a human must review and accept the
+ * draft before it is used in an actual negotiation.
+ *
+ * Usage:
+ *   node generate_negotiation_brief.js \
+ *     --company "Company Name" \
+ *     --distributor "Distributor Name" \
+ *     [--scenario-docx path/to/scenario.docx] \
+ *     [--notes "free text describing the situation"] \
+ *     [--owner "Owner Name"] \
+ *     --out path/to/output.docx
+ */
+
+const fs = require("fs");
+const path = require("path");
+const { execFileSync } = require("child_process");
+const {
+  Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow,
+  TableCell, WidthType, ShadingType, BorderStyle, AlignmentType,
+  Header, Footer, PageNumber, LevelFormat, convertInchesToTwip,
+} = require("docx");
+
+const KB = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "knowledge_base.json"), "utf8")
+);
+
+function parseArgs(argv) {
+  const args = {};
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a.startsWith("--")) {
+      const key = a.slice(2);
+      const next = argv[i + 1];
+      if (next === undefined || next.startsWith("--")) {
+        args[key] = true;
+      } else {
+        args[key] = next;
+        i++;
+      }
+    }
+  }
+  return args;
+}
+
+function extractDocxText(docxPath) {
+  try {
+    const out = execFileSync("pandoc", ["-t", "plain", docxPath], {
+      encoding: "utf8",
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return out;
+  } catch (err) {
+    console.error(
+      `Warning: could not extract text from ${docxPath} (${err.message}). ` +
+      `Continuing with --notes text only.`
+    );
+    return "";
+  }
+}
+
+function detectDistributor(text) {
+  const lower = text.toLowerCase();
+  for (const key of Object.keys(KB.distributors)) {
+    const entry = KB.distributors[key];
+    if (entry.match.some((m) => lower.includes(m))) {
+      return { key, entry };
+    }
+  }
+  return { key: "generic", entry: KB.distributors.generic };
+}
+
+function detectIssues(text) {
+  const lower = text.toLowerCase();
+  const found = [];
+  for (const key of Object.keys(KB.issues)) {
+    const entry = KB.issues[key];
+    if (entry.match.some((m) => lower.includes(m))) {
+      found.push({ key, entry });
+    }
+  }
+  return found;
+}
+
+function bulletParas(strings, opts = {}) {
+  return strings.map(
+    (s) =>
+      new Paragraph({
+        text: s,
+        bullet: { level: 0 },
+        spacing: { after: 120 },
+        ...opts,
+      })
+  );
+}
+
+function heading(text, level = HeadingLevel.HEADING_1) {
+  return new Paragraph({ text, heading: level, spacing: { before: 300, after: 150 } });
+}
+
+function bodyPara(text, opts = {}) {
+  return new Paragraph({ children: [new TextRun(text)], spacing: { after: 120 }, ...opts });
+}
+
+function qaTable(items) {
+  const headerRow = new TableRow({
+    tableHeader: true,
+    children: [
+      new TableCell({
+        width: { size: 4500, type: WidthType.DXA },
+        shading: { type: ShadingType.CLEAR, fill: "2F2F2F" },
+        children: [new Paragraph({ children: [new TextRun({ text: "If they ask...", bold: true, color: "FFFFFF" })] })],
+      }),
+      new TableCell({
+        width: { size: 5900, type: WidthType.DXA },
+        shading: { type: ShadingType.CLEAR, fill: "2F2F2F" },
+        children: [new Paragraph({ children: [new TextRun({ text: "Suggested counter", bold: true, color: "FFFFFF" })] })],
+      }),
+    ],
+  });
+
+  const rows = items.map(
+    (item) =>
+      new TableRow({
+        children: [
+          new TableCell({
+            width: { size: 4500, type: WidthType.DXA },
+            children: [new Paragraph({ children: [new TextRun({ text: item.question, italics: true })] })],
+          }),
+          new TableCell({
+            width: { size: 5900, type: WidthType.DXA },
+            children: [new Paragraph(item.counter)],
+          }),
+        ],
+      })
+  );
+
+  return new Table({
+    width: { size: 10400, type: WidthType.DXA },
+    columnWidths: [4500, 5900],
+    rows: [headerRow, ...rows],
+  });
+}
+
+function build({ company, distributor, ownerText, scenarioText, owner, generatedDate, liveResearch }) {
+  const combinedText = `${scenarioText}\n${ownerText}`;
+  const { entry: distEntry } = detectDistributor(`${distributor}\n${combinedText}`);
+  const issueMatches = detectIssues(combinedText);
+
+  const distributorLabel =
+    (liveResearch && liveResearch.distributorName) ||
+    (distEntry.label === "Independent / Regional Distributor" && distributor
+      ? distributor
+      : distEntry.label);
+
+  const difficultQAs = [
+    ...distEntry.difficultQuestions,
+    ...issueMatches.flatMap((m) => m.entry.difficultQuestions),
+    ...(liveResearch && liveResearch.difficultQuestions ? liveResearch.difficultQuestions : []),
+    ...KB.genericDifficultQuestions,
+  ];
+
+  const children = [];
+
+  // Title block
+  children.push(
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 60 },
+      children: [new TextRun({ text: "DRAFT — PENDING OWNER REVIEW", bold: true, color: "B00020", size: 22 })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 60 },
+      children: [new TextRun({ text: "Negotiation Brief", bold: true, size: 48 })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 60 },
+      children: [new TextRun({ text: `${company}  |  Distributor: ${distributorLabel}`, size: 26 })],
+    }),
+    new Paragraph({
+      alignment: AlignmentType.CENTER,
+      spacing: { after: 300 },
+      children: [new TextRun({ text: `Generated ${generatedDate}`, size: 20, italics: true, color: "666666" })],
+    }),
+    bodyPara(
+      "This brief is a starting point prepared from the scenario notes provided and a small researched " +
+      "knowledge base on distributor dynamics and negotiation tactics. It is not legal or financial advice. " +
+      "Review every figure and claim against your own contract and current numbers, and do not use this in a " +
+      "live negotiation until you have accepted it below."
+    )
+  );
+
+  // Situation summary
+  children.push(heading("1. Situation Summary"));
+  if (scenarioText.trim()) {
+    scenarioText
+      .split(/\n{1,}/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .forEach((line) => children.push(bodyPara(line)));
+  }
+  if (ownerText.trim()) {
+    children.push(bodyPara(ownerText.trim()));
+  }
+  if (!scenarioText.trim() && !ownerText.trim()) {
+    children.push(bodyPara("No scenario details were provided. Add notes describing the renewal situation and regenerate."));
+  }
+
+  // Distributor context
+  children.push(heading("2. Distributor Profile & Market Context"));
+  if (distEntry.label !== "Independent / Regional Distributor" || !liveResearch) {
+    children.push(...bulletParas(distEntry.context));
+  }
+  if (liveResearch && Array.isArray(liveResearch.bullets) && liveResearch.bullets.length) {
+    children.push(
+      new Paragraph({
+        spacing: { before: 120, after: 60 },
+        children: [new TextRun({
+          text: `Live web research on ${liveResearch.distributorName || distributorLabel} (fetched ${liveResearch.fetchedDate || generatedDate}):`,
+          bold: true,
+        })],
+      })
+    );
+    children.push(...bulletParas(liveResearch.bullets));
+    if (Array.isArray(liveResearch.sources) && liveResearch.sources.length) {
+      children.push(
+        new Paragraph({
+          spacing: { before: 60, after: 60 },
+          children: [new TextRun({ text: "Sources for the above:", italics: true, size: 18, color: "666666" })],
+        })
+      );
+      liveResearch.sources.forEach((s) => {
+        children.push(
+          new Paragraph({
+            spacing: { after: 40 },
+            children: [new TextRun({ text: `${s.title || s.url} — ${s.url}`, size: 18, color: "666666" })],
+          })
+        );
+      });
+    }
+  }
+  if (issueMatches.length) {
+    issueMatches.forEach((m) => {
+      children.push(
+        new Paragraph({
+          spacing: { before: 120, after: 60 },
+          children: [new TextRun({ text: m.entry.label, bold: true })],
+        })
+      );
+      children.push(...bulletParas(m.entry.context));
+    });
+  }
+
+  // Objectives / BATNA
+  children.push(heading("3. Objectives — Target, Acceptable, Walk-Away"));
+  children.push(
+    bodyPara(
+      "Fill in before the conversation. Set these separately for each issue in play (margin, MOQ, marketing " +
+      "spend, payment terms, exclusivity) so you can trade across them instead of conceding on all at once."
+    )
+  );
+  const objectiveRows = ["Margin / Pricing", "Minimum Order Quantity", "Marketing / Trade Spend", "Payment Terms", "Exclusivity", "Term Length"].map(
+    (label) =>
+      new TableRow({
+        children: [
+          new TableCell({ width: { size: 2800, type: WidthType.DXA }, children: [new Paragraph({ children: [new TextRun({ text: label, bold: true })] })] }),
+          new TableCell({ width: { size: 2400, type: WidthType.DXA }, children: [new Paragraph("Target: ______")] }),
+          new TableCell({ width: { size: 2400, type: WidthType.DXA }, children: [new Paragraph("Acceptable: ______")] }),
+          new TableCell({ width: { size: 2800, type: WidthType.DXA }, children: [new Paragraph("Walk-away: ______")] }),
+        ],
+      })
+  );
+  children.push(
+    new Table({
+      width: { size: 10400, type: WidthType.DXA },
+      columnWidths: [2800, 2400, 2400, 2800],
+      rows: objectiveRows,
+    })
+  );
+  children.push(bodyPara(""));
+  children.push(
+    new Paragraph({
+      children: [new TextRun({ text: "BATNA (your real alternative if this renewal falls through): ", bold: true })],
+      spacing: { before: 200 },
+    })
+  );
+  children.push(bodyPara("______________________________________________________________"));
+
+  // Talking points
+  children.push(heading("4. Suggested Talking Points"));
+  children.push(...bulletParas([
+    `Open by naming the relationship's track record and your intent to renew, before any specific ask: you want a fair deal that works for both sides, not a fight.`,
+    `Lead with your own performance data (sell-through, repeat purchase rate, reviews, social proof) to reframe the conversation from opinions to facts.`,
+    `State your priority issues explicitly and in order, so the distributor knows what matters most to you and where you have flexibility.`,
+    `If pressed on any single number, offer a trade (a non-price concession) rather than an immediate yes or no.`,
+    `Ask directly what's changed on their side this cycle — a corporate directive, a margin target, a competing brand — to understand their real constraint.`,
+  ]));
+  if (KB.tactics.length) {
+    children.push(
+      new Paragraph({
+        spacing: { before: 120, after: 60 },
+        children: [new TextRun({ text: "General negotiation tactics to keep in mind:", bold: true })],
+      })
+    );
+    children.push(...bulletParas(KB.tactics));
+  }
+
+  // Difficult questions & counters
+  children.push(heading("5. Anticipated Difficult Questions & Counters"));
+  children.push(bodyPara("Questions selected based on the distributor and issues detected in your scenario notes, plus general renewal pressure tactics."));
+  children.push(qaTable(difficultQAs));
+
+  // Next steps / sign-off
+  children.push(heading("6. Next Steps & Sign-Off"));
+  children.push(...bulletParas([
+    "Confirm every figure in this brief (margins, dates, terms) against your actual current contract before using it.",
+    "Confirm the distributor facts above are still current — this brief was generated from open web research and may be out of date.",
+    "Decide and write down your walk-away point before the conversation, and get sign-off from anyone else who needs to agree to it.",
+    "This brief does not get used in a live negotiation, sent to anyone, or treated as final until the owner below has reviewed and accepted it.",
+  ]));
+  children.push(
+    new Paragraph({ spacing: { before: 300 }, children: [new TextRun({ text: "Owner sign-off", bold: true })] }),
+    bodyPara(`Reviewed and accepted by: ${owner || "______________________"}`),
+    bodyPara("Date: ______________________"),
+    bodyPara("Notes / changes required before use: ______________________________________________")
+  );
+
+  return children;
+}
+
+function runExtract(args) {
+  if (!args["scenario-docx"] && !args.notes) {
+    console.error("--extract requires --scenario-docx and/or --notes");
+    process.exit(1);
+  }
+  const scenarioText = args["scenario-docx"] ? extractDocxText(args["scenario-docx"]) : "";
+  const ownerText = args.notes || "";
+  const combinedText = `${scenarioText}\n${ownerText}`;
+  const { key: distributorKey, entry: distEntry } = detectDistributor(`${args.distributor || ""}\n${combinedText}`);
+  const issueMatches = detectIssues(combinedText);
+
+  const result = {
+    scenarioText,
+    ownerText,
+    matchedDistributorKey: distributorKey,
+    matchedDistributorLabel: distEntry.label,
+    matchedIssues: issueMatches.map((m) => m.key),
+    note:
+      distributorKey === "generic"
+        ? "No known distributor profile matched (only Sephora and Ulta are pre-built). If a specific distributor is named in the text above, look it up live and pass the result via --live-research before generating the brief."
+        : "A pre-built distributor profile matched; --live-research is optional but can still add fresher detail.",
+  };
+
+  if (args.out) {
+    fs.writeFileSync(args.out, JSON.stringify(result, null, 2));
+    console.log(`Wrote ${args.out}`);
+  } else {
+    console.log(JSON.stringify(result, null, 2));
+  }
+}
+
+function main() {
+  const args = parseArgs(process.argv.slice(2));
+
+  if (args.extract) {
+    runExtract(args);
+    return;
+  }
+
+  if (!args.company || !args.out) {
+    console.error(
+      "Usage: node generate_negotiation_brief.js --company \"Name\" [--distributor \"Name\"] " +
+      "[--scenario-docx file.docx] [--notes \"text\"] [--live-research file.json] [--owner \"Name\"] --out output.docx\n" +
+      "   or: node generate_negotiation_brief.js --extract [--scenario-docx file.docx] [--notes \"text\"] [--out extracted.json]"
+    );
+    process.exit(1);
+  }
+
+  const scenarioText = args["scenario-docx"] ? extractDocxText(args["scenario-docx"]) : "";
+  const ownerText = args.notes || "";
+  const generatedDate = new Date().toISOString().slice(0, 10);
+  const liveResearch = args["live-research"]
+    ? JSON.parse(fs.readFileSync(args["live-research"], "utf8"))
+    : null;
+
+  const children = build({
+    company: args.company,
+    distributor: args.distributor || "",
+    ownerText,
+    scenarioText,
+    owner: args.owner || "",
+    generatedDate,
+    liveResearch,
+  });
+
+  const doc = new Document({
+    sections: [
+      {
+        properties: {
+          page: {
+            size: { width: 12240, height: 15840 }, // US Letter
+            margin: { top: 1080, bottom: 1080, left: 1080, right: 1080 },
+          },
+        },
+        headers: {
+          default: new Header({
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.RIGHT,
+                children: [new TextRun({ text: "DRAFT — not for distribution", italics: true, size: 16, color: "999999" })],
+              }),
+            ],
+          }),
+        },
+        footers: {
+          default: new Footer({
+            children: [
+              new Paragraph({
+                alignment: AlignmentType.CENTER,
+                children: [
+                  new TextRun({ text: "Page ", size: 16, color: "999999" }),
+                  new TextRun({ children: [PageNumber.CURRENT], size: 16, color: "999999" }),
+                ],
+              }),
+            ],
+          }),
+        },
+        children,
+      },
+    ],
+  });
+
+  Packer.toBuffer(doc).then((buffer) => {
+    fs.writeFileSync(args.out, buffer);
+    console.log(`Wrote ${args.out}`);
+  });
+}
+
+main();
